@@ -2,51 +2,60 @@
 import importlib
 import logging
 import os
+import sys
+import traceback
 
-import grizzly.corpman
+from grizzly.corpman import Adapter
 
-log = logging.getLogger("adapter_loader")  # pylint: disable=invalid-name
+log = logging.getLogger("grizzly")  # pylint: disable=invalid-name
 
+__all__ = ("get", "load", "names")
 __adapters__ = dict()
 
-def load():
-    here = os.path.abspath(os.path.dirname(__file__))
-    for sub in os.listdir(here):
-        if not os.path.isdir(os.path.join(here, sub)):
-            continue
-        log.debug('processing: %s', sub)
-        try:
-            lib = importlib.import_module(
-                ".%s" % os.path.splitext(sub)[0],
-                package="grizzly.corpman.adapters")
-        except ImportError as err:
-            log.warning("ImportError for %s: %s", os.path.splitext(sub)[0], err)
-            continue
+def get(name):
+    return __adapters__.get(name.lower(), None)
 
+def load(path=None, skip_failures=True):
+    assert not __adapters__, "adapters have already been loaded"
+    if path is None:
+        path = os.path.dirname(__file__)
+    path = os.path.abspath(path)
+    log.debug("loading adapters from %r", path)
+    sys.path.append(path)
+    for sub in os.listdir(path):
+        if not os.path.isfile(os.path.join(path, sub, "__init__.py")):
+            continue
+        log.debug("scanning %r", sub)
+        try:
+            lib = importlib.import_module(sub)
+        except Exception:  # pylint: disable=broad-except
+            if not skip_failures:
+                raise
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            tbinfo = traceback.extract_tb(exc_tb)[-1]
+            log.debug("raised %s: %s (%s:%d)", exc_type.__name__, exc_obj, tbinfo[0], tbinfo[1])
+            continue
         for clsname in dir(lib):
             cls = getattr(lib, clsname)
-            if isinstance(cls, type) and issubclass(cls, grizzly.corpman.Adapter):
+            if isinstance(cls, type) and issubclass(cls, Adapter):
                 # sanity checks
                 if not isinstance(cls.NAME, str):
                     raise RuntimeError(
-                        "Key for %s should be a string, not '%s'" % (cls.__name__, cls.NAME))
+                        "%s.NAME must be 'str' not %r" % (cls.__name__, type(cls.NAME).__name__))
                 if cls.NAME.lower() != cls.NAME:
                     raise RuntimeError(
-                        "Key for %s should be lowercase, not '%s'" % (cls.__name__, cls.NAME))
+                        "%s.NAME %r must be lowercase" % (cls.__name__, cls.NAME))
                 if cls.NAME in __adapters__:
-                    raise RuntimeError("Key collision! '%s' is use by %s and %s" % (
-                        cls.NAME,
-                        __adapters__[cls.NAME].__name__,
-                        cls.__name__))
+                    raise RuntimeError(
+                        "Name collision! %r is used by %r and %r" % (
+                            cls.NAME,
+                            __adapters__[cls.NAME].__name__,
+                            cls.__name__))
                 __adapters__[cls.NAME] = cls
-
-
-def get(name):
-    return __adapters__.get(name, None)
-
+                break
+        else:
+            log.debug("ignored %r", sub)
+    log.debug("%d adapters loaded", len(__adapters__))
 
 def names():
     return __adapters__.keys()
-
-
-load()
